@@ -37,11 +37,16 @@
     esp-web-install-button {
       --esp-tools-button-color: #ffffff;
       --esp-tools-button-text-color: #1a1a1a;
-      --esp-tools-button-border-color: #2b6cb0;
+      --esp-tools-button-border-color: #000000;
     }
     .boton-wrap {
       text-align: center;
       margin: 20px 0 8px 0;
+    }
+    /* Ribete fino negro por si el componente no lo aplica desde su shadow DOM */
+    .boton-wrap esp-web-install-button::part(button) {
+      border: 1px solid #000000;
+      border-radius: 4px;
     }
     footer {
       margin-top: 32px;
