@@ -1,0 +1,81 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Instalador - Controlador LED 10 MOSFET</title>
+  <script type="module" src="https://unpkg.com/esp-web-tools@10/dist/web/install-button.js?module"></script>
+  <style>
+    body {
+      background: #ffffff;
+      color: #1a1a1a;
+      font-family: Arial, Helvetica, sans-serif;
+      max-width: 560px;
+      margin: 40px auto;
+      padding: 0 20px;
+      line-height: 1.5;
+    }
+    h1 { font-size: 1.4em; margin-bottom: 4px; }
+    .subtitle { color: #666; margin-top: 0; font-size: 0.95em; }
+    .card {
+      border: 1px solid #ddd;
+      border-radius: 10px;
+      padding: 20px;
+      margin-top: 20px;
+      background: #f9f9f9;
+    }
+    ol { padding-left: 20px; }
+    ol li { margin-bottom: 6px; }
+    .aviso {
+      background: #fff8e1;
+      border-left: 4px solid #f5b400;
+      padding: 10px 14px;
+      border-radius: 4px;
+      margin-top: 16px;
+      font-size: 0.9em;
+    }
+    esp-web-install-button {
+      --esp-tools-button-color: #ffffff;
+      --esp-tools-button-text-color: #1a1a1a;
+      --esp-tools-button-border-color: #2b6cb0;
+    }
+    .boton-wrap {
+      text-align: center;
+      margin: 20px 0 8px 0;
+    }
+    footer {
+      margin-top: 32px;
+      color: #888;
+      font-size: 0.85em;
+      text-align: center;
+    }
+  </style>
+</head>
+<body>
+  <h1>Controlador LED 10 MOSFET</h1>
+  <p class="subtitle">Instalador de firmware para el ESP32 de la placa.</p>
+
+  <div class="card">
+    <p><strong>Cómo usar:</strong></p>
+    <ol>
+      <li>Conecta el ESP32 al ordenador con un cable micro-USB de datos.</li>
+      <li>Pulsa el botón de abajo.</li>
+      <li>En la ventana emergente, selecciona el puerto <em>Silicon Labs CP210x</em>.</li>
+      <li>Espera a que termine el proceso (aprox. 30-60 segundos).</li>
+    </ol>
+
+    <div class="boton-wrap">
+      <esp-web-install-button manifest="manifest.json"></esp-web-install-button>
+    </div>
+  </div>
+
+  <div class="aviso">
+    Solo funciona en <strong>Chrome, Edge u Opera</strong> de escritorio.
+    No funciona en móvil ni en Firefox/Safari.
+  </div>
+
+  <footer>
+    v1.0.0 · Placa 10 MOSFET
+  </footer>
+</body>
+</html>
