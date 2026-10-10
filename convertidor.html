@@ -10,7 +10,7 @@
       background: #ffffff;
       color: #1a1a1a;
       font-family: Arial, Helvetica, sans-serif;
-      max-width: 900px;
+      max-width: 980px;
       margin: 40px auto;
       padding: 0 20px;
       line-height: 1.5;
@@ -40,10 +40,18 @@
     .ok    { color: #1a7f37; font-weight: bold; }
     .error { color: #b42318; font-weight: bold; white-space: pre-wrap; }
     .info  { color: #555; font-size: 0.9em; }
+    .aviso {
+      background: #fff8e1;
+      border: 1px solid #e0c870;
+      border-radius: 6px;
+      padding: 10px 12px;
+      font-size: 0.9em;
+      margin-top: 12px;
+    }
     #resultado { margin-top: 16px; }
     #csvArea {
       width: 100%;
-      height: 140px;
+      height: 150px;
       font-family: Consolas, monospace;
       font-size: 0.9em;
       margin-top: 8px;
@@ -51,6 +59,7 @@
       border-radius: 4px;
       padding: 8px;
       box-sizing: border-box;
+      white-space: pre;
     }
     table.preview {
       border-collapse: collapse;
@@ -65,9 +74,13 @@
       font-size: 0.75em;
       color: #555;
     }
-    table.preview th {
-      background: #eee;
-      font-weight: normal;
+    table.preview th { background: #eee; font-weight: normal; }
+    table.preview th.canal { width: 44px; }
+    table.preview th.tiempo, table.preview td.tiempo {
+      width: 70px;
+      background: #e8eef6;
+      font-variant-numeric: tabular-nums;
+      color: #1a1a1a;
     }
     table.preview td.on  { background: #48bb78; color: #fff; }
     table.preview td.off { background: #f0f0f0; color: #999; }
@@ -80,28 +93,48 @@
       font-size: 0.85em;
       margin-left: 8px;
     }
+    table.tiempos { border-collapse: collapse; margin-top: 10px; font-size: 0.9em; }
+    table.tiempos th, table.tiempos td {
+      border: 1px solid #ccc;
+      padding: 4px 10px;
+      text-align: right;
+    }
+    table.tiempos th { background: #eee; font-weight: normal; }
+    table.tiempos td:first-child, table.tiempos th:first-child { text-align: left; }
+    code { background: #ececec; padding: 1px 4px; border-radius: 3px; }
   </style>
 </head>
 <body>
   <h1>Convertidor Excel -> CSV</h1>
-  <p class="subtitle">Convierte una plantilla .xlsx en el CSV que espera el controlador de 10 canales LED.</p>
+  <p class="subtitle">Convierte la plantilla .xlsx en el CSV que espera el controlador de 10 canales LED.</p>
 
   <div class="card">
     <p><strong>1) Selecciona el Excel:</strong></p>
     <input type="file" id="fileInput" accept=".xlsx,.xls,.csv">
     <p class="info">
-      Formato esperado: 10 filas de datos con valores 0 o 1, cada fila corresponde a una salida (S1 a S10).
-      Se admite una columna de etiquetas a la izquierda (por ejemplo "Elemento N") y filas de cabecera arriba;
-      el convertidor las detecta y las ignora.
+      Formato esperado: una fila de cabecera cuya primera celda sea <code>t</code>
+      (o <code>t (ms)</code>), y debajo 10 filas, una por salida (S1 a S10).
+      La primera celda de cada fila es su tiempo por paso en milisegundos
+      (minimo 5, maximo 3600000) y el resto son <code>0</code> o <code>1</code>.
+      Se admite una columna de etiquetas a la izquierda de <code>t</code>
+      (por ejemplo "Elemento N") y filas de titulo encima: se ignoran.
+    </p>
+    <p class="info">
+      Cada fila avanza por sus columnas a su propio ritmo, asi que las filas
+      <strong>no van sincronizadas</strong> entre si.
     </p>
   </div>
 
   <div class="card" id="cardResultado" style="display:none;">
     <div id="resultado"></div>
-    <div id="previewWrap" style="display:none;">
-      <p><strong>Vista previa</strong> <span id="badgeInfo" class="badge"></span></p>
+    <div id="detalleWrap" style="display:none;">
+      <p><strong>Tiempos por salida</strong></p>
+      <div id="tablaTiempos"></div>
+      <div class="aviso" id="avisoSincro"></div>
+
+      <p style="margin-top:18px;"><strong>Vista previa</strong> <span id="badgeInfo" class="badge"></span></p>
       <div style="overflow-x:auto;"><table class="preview" id="previewTable"></table></div>
-      <p class="info">Verde = encendido (1), gris = apagado (0). Cada columna dura 1 segundo.</p>
+      <p class="info" id="notaPreview">Verde = encendido (1), gris = apagado (0).</p>
 
       <p style="margin-top:16px;"><strong>CSV generado</strong></p>
       <textarea id="csvArea" readonly></textarea>
@@ -115,8 +148,17 @@
 <script>
 "use strict";
 
-const NUM_CANALES = 10;
+// Estos limites deben coincidir con los de include/config.h
+const NUM_CANALES  = 10;
+const T_MIN_MS     = 5;
+const T_MAX_MS     = 3600000;
+const MAX_COLUMNAS = 16383;
+
+// Con muchas columnas la tabla de vista previa seria inmanejable
+const MAX_PREVIEW = 60;
+
 let csvActual = "";
+let datosActuales = null;   // { numColumnas, tiempos[], filas[][] }
 
 document.getElementById("fileInput").addEventListener("change", function (e) {
   const file = e.target.files[0];
@@ -134,97 +176,228 @@ document.getElementById("fileInput").addEventListener("change", function (e) {
 
 function procesar(buffer) {
   const workbook = XLSX.read(buffer, { type: "array" });
-  const primeraHoja = workbook.SheetNames[0];
-  const hoja = workbook.Sheets[primeraHoja];
-  // Leer como matriz, permitiendo huecos
-  const matriz = XLSX.utils.sheet_to_json(hoja, { header: 1, defval: null, blankrows: false });
+  const hoja = workbook.Sheets[workbook.SheetNames[0]];
+  // Leer como matriz, conservando los huecos para poder senalar la celda exacta
+  const matriz = XLSX.utils.sheet_to_json(hoja, { header: 1, defval: null, blankrows: true });
 
-  const filasDatos = extraerFilasDatos(matriz);
-  if (typeof filasDatos === "string") {
-    mostrarError(filasDatos);
+  const datos = extraerDatos(matriz);
+  if (typeof datos === "string") {
+    mostrarError(datos);
     return;
   }
 
-  const numColumnas = filasDatos[0].length;
-  const csvLineas = filasDatos.map(f => f.join(","));
-  csvActual = csvLineas.join("\n") + "\n";
+  datosActuales = datos;
+  csvActual = generarCSV(datos);
 
-  mostrarOK(numColumnas);
-  dibujarPreview(filasDatos);
+  mostrarOK(datos);
+  dibujarTiempos(datos);
+  dibujarPreview(datos);
   document.getElementById("csvArea").value = csvActual;
 }
 
 // ---------------------------------------------------------------------------
-// Localiza las 10 filas de datos dentro de la matriz.
-// Estrategia:
-//   1. Recorrer filas de arriba abajo.
-//   2. Para cada fila, quedarse con las celdas cuyo valor sea numerico 0 o 1
-//      (ignorando la primera si es texto tipo "Elemento X").
-//   3. Considerar "fila de datos" aquellas que tengan >=2 valores 0/1 y todas
-//      las celdas consecutivas relevantes sean 0 o 1.
-//   4. Recolectar las primeras 10 filas asi.
+// Utilidades
 // ---------------------------------------------------------------------------
-function extraerFilasDatos(matriz) {
-  const candidatas = [];
+function vacia(v) {
+  return v === null || v === undefined || (typeof v === "string" && v.trim() === "");
+}
 
-  for (let i = 0; i < matriz.length; i++) {
+// Nombre de columna de Excel: 0 -> A, 25 -> Z, 26 -> AA
+function letraCol(idx) {
+  let s = "";
+  idx++;
+  while (idx > 0) {
+    const resto = (idx - 1) % 26;
+    s = String.fromCharCode(65 + resto) + s;
+    idx = Math.floor((idx - 1) / 26);
+  }
+  return s;
+}
+
+function celda(fila, col) {
+  return letraCol(col) + (fila + 1);
+}
+
+// La celda de cabecera del tiempo: "t", "T", "t (ms)", "t_ms"...
+function esEtiquetaTiempo(v) {
+  if (vacia(v)) return false;
+  const soloLetras = String(v).toLowerCase().replace(/[^a-z]/g, "");
+  return soloLetras === "t" || soloLetras === "tms";
+}
+
+// Devuelve el entero de una celda, o null si no es un entero valido
+function enteroDe(v) {
+  if (typeof v === "number") {
+    return Number.isInteger(v) ? v : null;
+  }
+  const s = String(v).trim();
+  if (!/^\d+$/.test(s)) return null;
+  return parseInt(s, 10);
+}
+
+// Devuelve 0, 1, o null si la celda no es ni 0 ni 1
+function bitDe(v) {
+  if (v === 0 || v === 1) return v;
+  const s = String(v).trim();
+  if (s === "0") return 0;
+  if (s === "1") return 1;
+  return null;
+}
+
+// ---------------------------------------------------------------------------
+// Localiza la cabecera y las 10 filas de datos dentro de la hoja.
+// Devuelve { numColumnas, tiempos, filas } o una cadena con el error.
+// ---------------------------------------------------------------------------
+function extraerDatos(matriz) {
+  // 1) Buscar la celda "t" de la cabecera
+  let filaCab = -1, colT = -1;
+  for (let i = 0; i < matriz.length && filaCab < 0; i++) {
     const fila = matriz[i] || [];
-    // Aislar los valores 0/1 de la fila, ignorando etiquetas y huecos.
-    // Reglas: nos quedamos con celdas cuyo valor sea 0, 1, "0" o "1".
-    // Rechazamos la fila si hay algun numero distinto de 0/1 en el medio.
-    let valores = [];
-    let saltoInvalido = false;
-
     for (let j = 0; j < fila.length; j++) {
-      const v = fila[j];
-      if (v === null || v === undefined || v === "") continue;
-      if (v === 0 || v === 1) { valores.push(v); continue; }
-      if (typeof v === "string") {
-        const t = v.trim();
-        if (t === "0") { valores.push(0); continue; }
-        if (t === "1") { valores.push(1); continue; }
-        // Cadena que no es 0/1: solo se admite si estamos al principio (etiqueta)
-        if (valores.length === 0) continue;
-        saltoInvalido = true;
-        break;
+      if (esEtiquetaTiempo(fila[j])) { filaCab = i; colT = j; break; }
+    }
+  }
+  if (filaCab < 0) {
+    return "No se encuentra la fila de cabecera. Debe haber una celda con el texto " +
+           "'t' (o 't (ms)') y, a su derecha, una etiqueta por cada paso de la secuencia.";
+  }
+
+  // 2) Contar las columnas de pasos, descartando las celdas vacias del final
+  const cab = matriz[filaCab] || [];
+  let ultima = colT;
+  for (let j = colT + 1; j < cab.length; j++) {
+    if (!vacia(cab[j])) ultima = j;
+  }
+  const numColumnas = ultima - colT;
+
+  if (numColumnas < 1) {
+    return "La cabecera de la celda " + celda(filaCab, colT) + " no tiene ninguna etiqueta de " +
+           "paso a su derecha. Pon al menos una (por ejemplo un 1 en " +
+           celda(filaCab, colT + 1) + ").";
+  }
+  if (numColumnas > MAX_COLUMNAS) {
+    return "La secuencia tiene " + numColumnas + " columnas de pasos y el maximo es " +
+           MAX_COLUMNAS + " (el limite de columnas de Excel menos la de la t).";
+  }
+  for (let j = colT + 1; j <= ultima; j++) {
+    if (vacia(cab[j])) {
+      return "La cabecera tiene un hueco en la celda " + celda(filaCab, j) +
+             ". Rellena todas las etiquetas de paso o borra las columnas que sobran.";
+    }
+  }
+
+  // 3) Recoger las 10 filas de datos, saltando filas vacias
+  const indices = [];
+  for (let i = filaCab + 1; i < matriz.length && indices.length < NUM_CANALES; i++) {
+    const fila = matriz[i] || [];
+    let tieneAlgo = false;
+    for (let j = colT; j < fila.length; j++) {
+      if (!vacia(fila[j])) { tieneAlgo = true; break; }
+    }
+    if (tieneAlgo) indices.push(i);
+  }
+  if (indices.length < NUM_CANALES) {
+    return "Se esperaban " + NUM_CANALES + " filas de datos debajo de la cabecera (una por " +
+           "salida S1 a S10) y solo se han encontrado " + indices.length + ".";
+  }
+
+  // 4) Validar celda a celda
+  const tiempos = [];
+  const filas = [];
+
+  for (let r = 0; r < NUM_CANALES; r++) {
+    const i = indices[r];
+    const fila = matriz[i] || [];
+
+    const t = enteroDe(fila[colT]);
+    if (t === null) {
+      return "Celda " + celda(i, colT) + " (S" + (r + 1) + "): el tiempo t vale '" +
+             (vacia(fila[colT]) ? "" : fila[colT]) +
+             "' y debe ser un numero entero de milisegundos.";
+    }
+    if (t < T_MIN_MS || t > T_MAX_MS) {
+      return "Celda " + celda(i, colT) + " (S" + (r + 1) + "): el tiempo t vale " + t +
+             " ms y debe estar entre " + T_MIN_MS + " y " + T_MAX_MS + " ms.";
+    }
+    tiempos.push(t);
+
+    const valores = [];
+    for (let c = 0; c < numColumnas; c++) {
+      const j = colT + 1 + c;
+      const b = bitDe(fila[j]);
+      if (b === null) {
+        return "Celda " + celda(i, j) + " (S" + (r + 1) + ", paso " + (c + 1) + "): vale '" +
+               (vacia(fila[j]) ? "" : fila[j]) + "' y solo se admite 0 o 1.";
       }
-      // Numero distinto de 0/1: descartar
-      saltoInvalido = true;
-      break;
+      valores.push(b);
     }
+    filas.push(valores);
 
-    if (saltoInvalido) continue;
-    if (valores.length >= 2) {
-      candidatas.push({ indice: i, valores: valores });
+    // Nada mas a la derecha de la ultima columna declarada
+    for (let j = colT + 1 + numColumnas; j < fila.length; j++) {
+      if (!vacia(fila[j])) {
+        return "Celda " + celda(i, j) + " (S" + (r + 1) + "): hay un valor fuera de las " +
+               numColumnas + " columnas que declara la cabecera. Borralo o anade la etiqueta " +
+               "que falta en la cabecera.";
+      }
     }
   }
 
-  if (candidatas.length < NUM_CANALES) {
-    return "No se han encontrado 10 filas con datos 0/1. Se encontraron " + candidatas.length + ".";
-  }
+  return { numColumnas: numColumnas, tiempos: tiempos, filas: filas };
+}
 
-  // Cogemos los primeros 10 bloques consecutivos con el mismo numero de columnas.
-  // Buscamos una ventana de 10 filas seguidas (por indice) con igual longitud.
-  for (let start = 0; start <= candidatas.length - NUM_CANALES; start++) {
-    const ventana = candidatas.slice(start, start + NUM_CANALES);
-    const largo = ventana[0].valores.length;
-    let ok = true;
-    for (let k = 1; k < ventana.length; k++) {
-      if (ventana[k].valores.length !== largo) { ok = false; break; }
-      if (ventana[k].indice !== ventana[k-1].indice + 1) { ok = false; break; }
-    }
-    if (ok) return ventana.map(w => w.valores);
-  }
+// ---------------------------------------------------------------------------
+// Generacion del CSV
+//
+// Separador ';' y saltos de linea de Windows, que es lo que produce Excel en
+// espanol. El firmware acepta tambien ',' y '\n'.
+// ---------------------------------------------------------------------------
+function generarCSV(datos) {
+  const lineas = [];
+  const cabecera = ["t"];
+  for (let c = 0; c < datos.numColumnas; c++) cabecera.push(String(c + 1));
+  lineas.push(cabecera.join(";"));
 
-  // Fallback: aunque no sean consecutivas, si hay exactamente 10 candidatas
-  // con la misma longitud, las usamos.
-  if (candidatas.length === NUM_CANALES) {
-    const largo = candidatas[0].valores.length;
-    const todasIgual = candidatas.every(c => c.valores.length === largo);
-    if (todasIgual) return candidatas.map(c => c.valores);
+  for (let r = 0; r < NUM_CANALES; r++) {
+    lineas.push([String(datos.tiempos[r])].concat(datos.filas[r]).join(";"));
   }
+  return lineas.join("\r\n") + "\r\n";
+}
 
-  return "No se han encontrado 10 filas seguidas con la misma cantidad de columnas 0/1.";
+// ---------------------------------------------------------------------------
+// Cada cuanto se repite el patron completo: minimo comun multiplo de la vuelta
+// de cada fila. Con BigInt para que no desborde.
+// ---------------------------------------------------------------------------
+function mcd(a, b) {
+  while (b) { const t = a % b; a = b; b = t; }
+  return a;
+}
+
+function periodoGlobalMs(datos) {
+  let lcm = BigInt(datos.tiempos[0]) * BigInt(datos.numColumnas);
+  for (let r = 1; r < NUM_CANALES; r++) {
+    const v = BigInt(datos.tiempos[r]) * BigInt(datos.numColumnas);
+    lcm = (lcm / mcd(lcm, v)) * v;
+  }
+  return lcm;
+}
+
+function formatearDuracion(ms) {
+  const n = Number(ms);
+  if (!isFinite(n) || n > 86400000 * 365) return "mas de un ano";
+  if (n < 1000) return n + " ms";
+  if (n < 60000) return (n / 1000).toFixed(2) + " s";
+  if (n < 3600000) {
+    const min = Math.floor(n / 60000);
+    const s = Math.round((n % 60000) / 1000);
+    return min + " min " + s + " s";
+  }
+  if (n < 86400000) {
+    const h = Math.floor(n / 3600000);
+    const min = Math.round((n % 3600000) / 60000);
+    return h + " h " + min + " min";
+  }
+  return (n / 86400000).toFixed(1) + " dias";
 }
 
 // ---------------------------------------------------------------------------
@@ -232,34 +405,73 @@ function extraerFilasDatos(matriz) {
 // ---------------------------------------------------------------------------
 function mostrarError(msg) {
   document.getElementById("cardResultado").style.display = "block";
-  document.getElementById("previewWrap").style.display = "none";
+  document.getElementById("detalleWrap").style.display = "none";
   document.getElementById("resultado").innerHTML = '<div class="error">' + escapar(msg) + '</div>';
   csvActual = "";
+  datosActuales = null;
 }
 
-function mostrarOK(numColumnas) {
+function mostrarOK(datos) {
   document.getElementById("cardResultado").style.display = "block";
-  document.getElementById("previewWrap").style.display = "block";
+  document.getElementById("detalleWrap").style.display = "block";
   document.getElementById("resultado").innerHTML =
-    '<div class="ok">CSV valido: 10 filas x ' + numColumnas + ' columnas (' + numColumnas + ' segundos por vuelta).</div>';
-  document.getElementById("badgeInfo").textContent = numColumnas + " pasos";
+    '<div class="ok">CSV valido: ' + NUM_CANALES + ' filas x ' + datos.numColumnas +
+    ' pasos.</div>';
+  document.getElementById("badgeInfo").textContent = datos.numColumnas + " pasos";
 }
 
-function dibujarPreview(filas) {
-  const tabla = document.getElementById("previewTable");
-  const numCols = filas[0].length;
-  let html = "<tr><th></th>";
-  for (let c = 0; c < numCols; c++) html += "<th>" + (c + 1) + "</th>";
-  html += "</tr>";
+function dibujarTiempos(datos) {
+  let html = "<table class='tiempos'><tr><th>Salida</th><th>t (ms)</th>" +
+             "<th>Vuelta completa</th></tr>";
   for (let r = 0; r < NUM_CANALES; r++) {
-    html += "<tr><th>S" + (r + 1) + "</th>";
-    for (let c = 0; c < numCols; c++) {
-      const v = filas[r][c];
+    const vuelta = datos.tiempos[r] * datos.numColumnas;
+    html += "<tr><td>S" + (r + 1) + "</td><td>" + datos.tiempos[r] + "</td><td>" +
+            formatearDuracion(vuelta) + "</td></tr>";
+  }
+  html += "</table>";
+  document.getElementById("tablaTiempos").innerHTML = html;
+
+  const iguales = datos.tiempos.every(t => t === datos.tiempos[0]);
+  let aviso;
+  if (iguales) {
+    aviso = "Las 10 salidas tienen el mismo tiempo (" + datos.tiempos[0] +
+            " ms), asi que van sincronizadas y el patron se repite cada " +
+            formatearDuracion(datos.tiempos[0] * datos.numColumnas) + ".";
+  } else {
+    aviso = "Cada salida avanza a su propio ritmo, por lo que las filas se van desfasando " +
+            "entre si. Todas arrancan juntas en el paso 1 al encender la placa o al subir " +
+            "el CSV, y el patron completo no se repite hasta pasados " +
+            formatearDuracion(periodoGlobalMs(datos)) + ".";
+  }
+  document.getElementById("avisoSincro").textContent = aviso;
+}
+
+function dibujarPreview(datos) {
+  const cols = Math.min(datos.numColumnas, MAX_PREVIEW);
+  let html = "<tr><th class='canal'></th><th class='tiempo'>t (ms)</th>";
+  for (let c = 0; c < cols; c++) html += "<th>" + (c + 1) + "</th>";
+  if (cols < datos.numColumnas) html += "<th>...</th>";
+  html += "</tr>";
+
+  for (let r = 0; r < NUM_CANALES; r++) {
+    html += "<tr><th class='canal'>S" + (r + 1) + "</th><td class='tiempo'>" +
+            datos.tiempos[r] + "</td>";
+    for (let c = 0; c < cols; c++) {
+      const v = datos.filas[r][c];
       html += '<td class="' + (v ? "on" : "off") + '">' + v + '</td>';
     }
+    if (cols < datos.numColumnas) html += "<td class='off'>...</td>";
     html += "</tr>";
   }
-  tabla.innerHTML = html;
+  document.getElementById("previewTable").innerHTML = html;
+
+  let nota = "Verde = encendido (1), gris = apagado (0). La columna t es el tiempo que dura " +
+             "cada paso de esa fila.";
+  if (cols < datos.numColumnas) {
+    nota += " Solo se muestran los " + MAX_PREVIEW + " primeros pasos de " +
+            datos.numColumnas + ".";
+  }
+  document.getElementById("notaPreview").textContent = nota;
 }
 
 function escapar(s) {
